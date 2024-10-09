@@ -1,0 +1,41 @@
+#!{venv_path}/bin/build-python -I
+
+import os
+import sys
+
+
+os.environ["PYTHON_CROSSENV"] = "3548089078"
+
+for name in [
+    "_PYTHON_PROJECT_BASE",
+    "_PYTHON_HOST_PLATFORM",
+    "_PYTHON_SYSCONFIGDATA_NAME",
+    "PYTHONHOME",
+    "PYTHONPATH",
+]:
+    old = "_OLD_" + name
+    if old not in os.environ and name in os.environ:
+        os.environ[old] = os.environ[name]
+
+os.environ["_PYTHON_PROJECT_BASE"] = "{host_python_home}/bin"
+os.environ["_PYTHON_HOST_PLATFORM"] = "{platform}-{os_version}-{multiarch}"
+os.environ["_PYTHON_SYSCONFIGDATA_NAME"] = "_sysconfigdata__{platform}_{multiarch}"
+os.environ["PYTHONHOME"] = "{host_python_home}"
+oldpath = os.environ.get("PYTHONPATH")
+newpath = os.pathsep.join([
+    "{venv_path}/cross",
+    "{build_python_home}/lib/python{py_version}",
+    "{build_python_home}/lib/python{py_version}/lib-dynload"
+])
+if oldpath:
+    path = os.pathsep.join([newpath, oldpath])
+else:
+    path = newpath
+
+os.environ["PYTHONPATH"] = path
+
+if True:
+    sys.argv[1:1] = ["-X", "frozen_modules=off"]
+
+# Fix up argv0 so that sys.executable will be correct
+os.execv("{venv_path}/bin/build-python", sys.argv)

@@ -1,0 +1,16 @@
+from collections import namedtuple
+
+# Fixup os.uname, which should fix most of platform module
+uname_result_type = namedtuple(
+    "uname_result",
+    ["sysname", "nodename", "release", "version", "machine"]
+)
+_uname_result = uname_result_type(
+        "{kernel_name}",
+        "build",
+        "{kernel_version}",
+        "",
+        "{arch}")
+
+def uname():
+    return _uname_result

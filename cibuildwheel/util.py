@@ -768,7 +768,6 @@ def find_compatible_wheel(wheels: Sequence[T], identifier: str) -> T | None:
     Finds a wheel with an abi3 or a none ABI tag in `wheels` compatible with the Python interpreter
     specified by `identifier` that is previously built.
     """
-
     interpreter, platform = identifier.split("-")
     free_threaded = interpreter.endswith("t")
     if free_threaded:
@@ -792,8 +791,9 @@ def find_compatible_wheel(wheels: Sequence[T], identifier: str) -> T | None:
                 # If a minor version number is given, it has to be lower than the current one.
                 continue
 
-            if platform.startswith(("manylinux", "musllinux", "macosx")):
-                # Linux, macOS require the beginning and ending match (macos/manylinux version doesn't need to)
+            if platform.startswith(("manylinux", "musllinux", "macosx", "ios")):
+                # Linux, macOS, and iOS require the beginning and ending match
+                # (macos/manylinux/iOS version number doesn't need to match)
                 os_, arch = platform.split("_", 1)
                 if not tag.platform.startswith(os_):
                     continue

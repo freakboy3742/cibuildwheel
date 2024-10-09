@@ -1,0 +1,23 @@
+cross_compiling = True
+build_path = [
+    "{build_python_home}/lib/python{py_version_tag}.zip",
+    "{build_python_home}/lib/python{py_version}",
+    "{build_python_home}/lib/python{py_version}/lib-dynload",
+    "{venv_path}/lib/python{py_version}/site-packages"
+]
+platform = "ios"
+abiflags = ""
+if abiflags is None:
+    del abiflags
+
+implementation._multiarch = "{multiarch}"
+if implementation._multiarch is None:
+    del implementation._multiarch
+
+# Remove cross-python from sys.path. It"s not needed after startup.
+path.remove("{venv_path}/cross")
+path.remove("{build_python_home}/lib/python{py_version}")
+
+# If a script in the cross environment tries to start a subprocess with sys.executable,
+# make sure that it points at the cross-platform python.
+executable = "{venv_path}/bin/python"

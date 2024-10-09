@@ -1,0 +1,28 @@
+from collections import namedtuple
+
+platform_uname_result_type = namedtuple(
+    "uname_result",
+    ["system", "node", "release", "version", "machine", "processor"]
+)
+
+_uname_result = platform_uname_result_type(
+        "{os_name}",
+        "build",
+        "{os_version}",
+        "",
+        "{arch}",
+        "{arch}")
+
+def uname():
+    return _uname_result
+
+
+def ios_ver(system="", release="", model="", is_simulator=False):
+    if system == "":
+        system = "{os_name}"
+    if release == "":
+        release = "{os_version}"
+    if model == "":
+        model = "iphone13,2"
+
+    return IOSVersionInfo(system, release, model, False)

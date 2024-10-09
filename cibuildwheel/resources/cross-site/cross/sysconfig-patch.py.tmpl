@@ -1,0 +1,30 @@
+# Pre 3.10 configuration of prefixes
+# Patch the things that depend on os.environ
+_PROJECT_BASE = '/Users/rkm/beeware/mobile-forge/support/3.13/iOS/Python.xcframework/ios-arm64/bin'
+
+# Things that need to be re-evaluated after patching
+_PYTHON_BUILD = is_python_build(True)
+_PREFIX = os.path.normpath(sys.prefix)
+_BASE_PREFIX = os.path.normpath(sys.base_prefix)
+_EXEC_PREFIX = os.path.normpath(sys.exec_prefix)
+_BASE_EXEC_PREFIX = os.path.normpath(sys.base_exec_prefix)
+
+# Python 3.10 introduced get_preferred_scheme; 3.11 made that method able to
+# identify virtual environments. Hard-code the 3.11 behavior, since we will
+# always be in a venv.
+if "venv" not in _INSTALL_SCHEMES:
+    def get_preferred_scheme(key):
+        return "venv"
+
+    _INSTALL_SCHEMES["venv"] = _INSTALL_SCHEMES["posix_prefix"]
+
+def get_makefile_filename():
+    return ''
+
+def _get_sysconfigdata_name():
+    return '_sysconfigdata__{platform}_{multiarch}'
+
+def get_platform():
+    return '{platform}-{os_version}-{multiarch}'
+
+assert _CONFIG_VARS is None, "sysconfig was set up prior to patching?"
