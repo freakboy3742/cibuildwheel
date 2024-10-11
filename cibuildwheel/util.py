@@ -361,9 +361,26 @@ def extract_zip(zip_src: Path, dest: Path) -> None:
                 dest.joinpath(zinfo.filename).chmod(permissions)
 
 
-def extract_tar(tar_src: Path, dest: Path) -> None:
+def strip_filter(size: int = 1):
+    """Create a tarfile filter that implements the equivalent of --strip/-C"""
+    def _filter(member, path):
+        parts = member.path.split("/", size)
+        try:
+            member.path = parts[size]
+            return member
+        except IndexError:
+            return None
+    return _filter
+
+
+def extract_tar(tar_src: Path, dest: Path, strip: int = 0) -> None:
     with tarfile.open(tar_src) as tar_:
-        tar_.extraction_filter = getattr(tarfile, "tar_filter", (lambda member, _: member))
+        if strip:
+            extraction_filter = strip_filter(strip)
+        else:
+            extraction_filter = getattr(tarfile, "tar_filter", (lambda member, _: member))
+
+        tar_.extraction_filter = extraction_filter
         tar_.extractall(dest)
 
 

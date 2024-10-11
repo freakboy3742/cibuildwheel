@@ -63,9 +63,7 @@ def cross_virtualenv(
         kernel_name = "Darwin"
         kernel_version = "23.5.0"
     else:
-        raise ValueError(
-            f"Can't build a cross-platform virtualenv for {os_name}"
-        )
+        raise ValueError(f"Can't build a cross-platform virtualenv for {os_name}")
 
     # Create the folder where the cross-platform configuratoin will be stored
     cross_path = venv_path / "cross"
@@ -80,16 +78,13 @@ def cross_virtualenv(
         / f"python{py_version}"
         / f"_sysconfigdata__{os_name.lower()}_{multiarch}.py"
     )
-    spec = importlib.util.spec_from_file_location(
-        sysconfigdata_module.stem,
-        sysconfigdata_module
-    )
+    spec = importlib.util.spec_from_file_location(sysconfigdata_module.stem, sysconfigdata_module)
     sysconfigdata = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(sysconfigdata)
 
     # The host's sysconfigdata will include references to build-time variables.
     # Update these to refer to the current known install location.
-    orig_prefix = sysconfigdata.build_time_vars['prefix']
+    orig_prefix = sysconfigdata.build_time_vars["prefix"]
     build_time_vars = {}
     for key, value in sysconfigdata.build_time_vars.items():
         if isinstance(value, str):
@@ -107,12 +102,8 @@ def cross_virtualenv(
 
     # Move the virtualenv's python binary to build-python
     (venv_path / "bin" / "python").rename(venv_path / "bin" / "build-python")
-    (venv_path / "bin" / "build-python3").symlink_to(
-        venv_path / "bin" / "build-python"
-    )
-    (venv_path / "bin" / f"build-python{py_version}").symlink_to(
-        venv_path / "bin" / "build-python"
-    )
+    (venv_path / "bin" / "build-python3").symlink_to(venv_path / "bin" / "build-python")
+    (venv_path / "bin" / f"build-python{py_version}").symlink_to(venv_path / "bin" / "build-python")
 
     # Roll out the template for the cross-environment site folder
     cross_template = Path(__file__).parent / "resources" / "cross-site"
@@ -120,10 +111,7 @@ def cross_virtualenv(
         template_path = full_template_path.relative_to(cross_template)
 
         out_path = venv_path / template_path.parent / template_path.stem
-        with (
-            full_template_path.open() as template_f,
-            out_path.open("w") as out_f
-        ):
+        with full_template_path.open() as template_f, out_path.open("w") as out_f:
             while line := template_f.readline():
                 out_f.write(
                     line.format(
@@ -156,15 +144,17 @@ def cross_virtualenv(
     # system libraries, the host and build environments, and Cargo (to allow for
     # Rust compilation).
     if sys.platform == "darwin":
-        env["PATH"] = os.pathsep.join([
-            str(host_python.parent),
-            str(venv_path / "bin"),
-            str(Path.home() / ".cargo" / "bin"),
-            "/usr/bin",
-            "/bin",
-            "/usr/sbin",
-            "/sbin",
-            "/Library/Apple/usr/bin",
-        ])
+        env["PATH"] = os.pathsep.join(
+            [
+                str(host_python.parent),
+                str(venv_path / "bin"),
+                str(Path.home() / ".cargo" / "bin"),
+                "/usr/bin",
+                "/bin",
+                "/usr/sbin",
+                "/sbin",
+                "/Library/Apple/usr/bin",
+            ]
+        )
 
     return env

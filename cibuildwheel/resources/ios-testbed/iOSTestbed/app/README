@@ -1,0 +1,4 @@
+This folder can contain any Python application code.
+
+When the test suite runs, this folder will be on the PYTHONPATH, and will be the
+working directory for the test suite.

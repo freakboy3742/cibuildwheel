@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
+import plistlib
+import shlex
 import shutil
 import subprocess
+import sys
 from collections.abc import Sequence, Set
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +30,7 @@ from .util import (
     call,
     combine_constraints,
     download,
+    extract_tar,
     find_compatible_wheel,
     get_build_verbosity_extra_flags,
     get_pip_version,
@@ -57,6 +62,10 @@ class PythonConfiguration:
         return f"{self.arch}-{self.sdk}"
 
     @property
+    def is_simulator(self):
+        return self.sdk.endswith("simulator")
+
+    @property
     def slice(self):
         return {
             "iphoneos": "ios-arm64",
@@ -69,24 +78,27 @@ def get_python_configurations(
     architectures: Set[Architecture],
 ) -> list[PythonConfiguration]:
     # iOS builds are always cross builds; we need to install a macOS Python as
-    # well. Load the macos configurations, and determine the macOS configuration
-    # that matches the platform we're building.
+    # well. Rather than duplicate the location of the URL of macOS installers,
+    # Load the macos configurations, and determine the macOS configuration
+    # that matches the platform we're building, and embed that URL in the parsed
+    # iOS configuration.
     macos_python_configs = read_python_configs("macos")
 
     def build_url(item):
-        # Extract the URL from the macOS configuration that matches
-        # the provided iOS configuration item.
-        macos_identifier = item["identifier"].rsplit("_", 1)[0].replace("ios", "macosx")
+        # The iOS item will be something like cp313-ios_arm64_iphoneos. Drop
+        # the iphoneos suffix, then replace ios with macosx to yield
+        # cp313-macosx_arm64, which will be a macOS configuration item.
+        macos_identifier = item["identifier"].rsplit("_", 1)[0]
+        macos_identifier = macos_identifier.replace("ios", "macosx")
         matching = [
-            config
-            for config in macos_python_configs
-            if config["identifier"] == macos_identifier
+            config for config in macos_python_configs if config["identifier"] == macos_identifier
         ]
         return matching[0]["url"]
 
-    # Load the platform configuration (iphoneos or iphonesimulator)
+    # Load the platform configuration
     full_python_configs = read_python_configs("ios")
 
+    # Build the configurations, annotating with macOS URL details.
     python_configurations = [
         PythonConfiguration(
             **item,
@@ -94,14 +106,15 @@ def get_python_configurations(
         )
         for item in full_python_configs
     ]
-    # filter out configs that don't match any of the selected architectures
+
+    # Filter out configs that don't match any of the selected architectures
     python_configurations = [
         c
         for c in python_configurations
-        if any(c.identifier.rsplit('_', 1)[0].endswith(a.value) for a in architectures)
+        if any(c.identifier.rsplit("_", 1)[0].endswith(a.value) for a in architectures)
     ]
 
-    # skip builds as required by BUILD/SKIP
+    # Skip builds as required by BUILD/SKIP
     python_configurations = [c for c in python_configurations if build_selector(c.identifier)]
 
     return python_configurations
@@ -121,13 +134,7 @@ def install_host_cpython(tmp: Path, config: PythonConfiguration) -> Path:
             call("tar", "-C", installation_path, "-xf", downloaded_tar_gz)
             downloaded_tar_gz.unlink()
 
-    return (
-        installation_path
-        / "Python.xcframework"
-        / config.slice
-        / "bin"
-        / f"python{config.version}"
-    )
+    return installation_path
 
 
 def setup_python(
@@ -137,7 +144,10 @@ def setup_python(
     environment: ParsedEnvironment,
     build_frontend: BuildFrontendName,
 ) -> tuple[Path, dict[str, str]]:
-
+    # An iOS environment requires 2 python installs - one for the build machine
+    # (macOS), and one for the host (iOS). We'll only ever interact with the
+    # *host* python, but the build Python needs to exist to act as the base
+    # for a cross venv.
     tmp.mkdir()
 
     implementation_id = python_configuration.identifier.split("-")[0]
@@ -145,7 +155,10 @@ def setup_python(
     if implementation_id.startswith("cp"):
         free_threading = "t-iphone" in python_configuration.identifier
         build_python = install_build_cpython(
-            tmp, python_configuration.version, python_configuration.build_url, free_threading
+            tmp,
+            python_configuration.version,
+            python_configuration.build_url,
+            free_threading,
         )
     else:
         msg = "Unknown Python implementation"
@@ -157,22 +170,31 @@ def setup_python(
 
     log.step(f"Installing Host Python {implementation_id}...")
     if implementation_id.startswith("cp"):
-        host_python = install_host_cpython(tmp, python_configuration)
+        host_install_path = install_host_cpython(tmp, python_configuration)
+        host_python = (
+            host_install_path
+            / "Python.xcframework"
+            / python_configuration.slice
+            / "bin"
+            / f"python{python_configuration.version}"
+        )
     else:
         msg = "Unknown Python implementation"
         raise ValueError(msg)
 
     assert (
         host_python.exists()
-    ), f"{host_python.name} not found, has {list(host_python.parent.iterdir())}"
+    ), f"{host_python.name} not found, has {list(host_install_path.iterdir())}"
 
     log.step("Creating cross build environment...")
+
+    ios_deployment_target = os.getenv("IPHONEOS_DEPLOYMENT_TARGET", "13.0")
 
     venv_path = tmp / "venv"
     env = cross_virtualenv(
         py_version=python_configuration.version,
         os_name="iOS",
-        os_version=os.getenv("IPHONEOS_DEPLOYMENT_TARGET", "13.0"),
+        os_version=ios_deployment_target,
         multiarch=python_configuration.multiarch,
         arch=python_configuration.arch,
         sdk=python_configuration.sdk,
@@ -184,8 +206,11 @@ def setup_python(
     venv_bin_path = venv_path / "bin"
     assert venv_bin_path.exists()
 
-    # we version pip ourselves, so we don't care about pip version checking
+    # We version pip ourselves, so we don't care about pip version checking
     env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+
+    # Ensure that IPHONEOS_DEPLOYMENT_TARGET is set in the environment
+    env["IPHONEOS_DEPLOYMENT_TARGET"] = ios_deployment_target
 
     # upgrade pip to the version matching our constraints
     call(
@@ -208,9 +233,9 @@ def setup_python(
     which_pip = call("which", "pip", env=env, capture_stdout=True).strip()
     if which_pip != str(venv_bin_path / "pip"):
         msg = (
-            "cibuildwheel: pip available on PATH doesn't match our installed "
-            "instance. If you have modified PATH, ensure that you don't "
-            "overwrite cibuildwheel's entry or insert pip above it."
+            "cibuildwheel: pip available on PATH doesn't match our installed instance. "
+            "If you have modified PATH, ensure that you don't overwrite cibuildwheel's "
+            "entry or insert pip above it."
         )
         raise errors.FatalError(msg)
 
@@ -218,22 +243,16 @@ def setup_python(
     which_python = call("which", "python", env=env, capture_stdout=True).strip()
     if which_python != str(venv_bin_path / "python"):
         msg = (
-            "cibuildwheel: python available on PATH doesn't match our "
-            "installed instance. If you have modified PATH, ensure that you "
-            "don't overwrite cibuildwheel's entry or insert python above it."
+            "cibuildwheel: python available on PATH doesn't match our installed instance. "
+            "If you have modified PATH, ensure that you don't overwrite cibuildwheel's "
+            "entry or insert python above it."
         )
         raise errors.FatalError(msg)
 
     log.step("Installing build tools...")
     if build_frontend == "pip":
+        # No additional build tools required
         pass
-        # call(
-        #     "pip",
-        #     "install",
-        #     "--upgrade",
-        #     *dependency_constraint_flags,
-        #     env=env,
-        # )
     elif build_frontend == "build":
         call(
             "pip",
@@ -246,7 +265,54 @@ def setup_python(
     else:
         assert_never(build_frontend)
 
-    return build_python, env
+    return host_install_path, env
+
+
+def extract_test_output(xcresult: Path) -> str:
+    """Extract stdout content from an Xcode xcresult bundle."""
+    try:
+        # First, get the ID of the test run
+        raw = call(
+            "xcrun",
+            "xcresulttool",
+            "get",
+            "--path",
+            xcresult,
+            "--format",
+            "json",
+            capture_stdout=True,
+        )
+        parsed = json.loads(raw)
+        action_result = parsed["actions"]["_values"][0]["actionResult"]
+        test_id = action_result["logRef"]["id"]["_value"]
+    except subprocess.CalledProcessError:
+        raise RuntimeError(f"Unable to call xcresulttool on {xcresult}")
+    except (KeyError, IndexError):
+        raise RuntimeError(f"Unable to extract test ID from {xcresult}")
+
+    # Then, extract the stdout content for the test ID.
+    try:
+        raw = call(
+            "xcrun",
+            "xcresulttool",
+            "get",
+            "--path",
+            xcresult,
+            "--id",
+            test_id,
+            "--format",
+            "json",
+            capture_stdout=True,
+        )
+        parsed = json.loads(raw)
+        subsections = parsed["subsections"]["_values"][1]["subsections"]
+        test_output = subsections["_values"][0]["emittedOutput"]["_value"]
+    except subprocess.CalledProcessError:
+        raise RuntimeError(f"Unable to call xcresulttool on {xcresult}")
+    except (KeyError, IndexError):
+        raise RuntimeError(f"Unable to extract test output from {xcresult}")
+
+    return test_output
 
 
 def build(options: Options, tmp_path: Path) -> None:
@@ -266,7 +332,9 @@ def build(options: Options, tmp_path: Path) -> None:
             env = before_all_options.environment.as_dictionary(prev_environment=os.environ)
             env.setdefault("IPHONEOS_DEPLOYMENT_TARGET", "13.0")
             before_all_prepared = prepare_command(
-                before_all_options.before_all, project=".", package=before_all_options.package_dir
+                before_all_options.before_all,
+                project=".",
+                package=before_all_options.package_dir,
             )
             shell(before_all_prepared, env=env)
 
@@ -288,7 +356,7 @@ def build(options: Options, tmp_path: Path) -> None:
                     build_options.dependency_constraints.get_for_python_version(config.version),
                 ]
 
-            build_python, env = setup_python(
+            host_install_path, env = setup_python(
                 identifier_tmp_dir / "build",
                 config,
                 dependency_constraint_flags,
@@ -301,13 +369,18 @@ def build(options: Options, tmp_path: Path) -> None:
             if compatible_wheel:
                 log.step_end()
                 print(
-                    f"\nFound previously built wheel {compatible_wheel.name}, that's compatible with {config.identifier}. Skipping build step..."
+                    f"\nFound previously built wheel {compatible_wheel.name} "
+                    f"that is compatible with {config.identifier}. "
+                    "Skipping build step..."
                 )
+                test_wheel = compatible_wheel
             else:
                 if build_options.before_build:
                     log.step("Running before_build...")
                     before_build_prepared = prepare_command(
-                        build_options.before_build, project=".", package=build_options.package_dir
+                        build_options.before_build,
+                        project=".",
+                        package=build_options.package_dir,
                     )
                     shell(before_build_prepared, env=env)
 
@@ -344,8 +417,10 @@ def build(options: Options, tmp_path: Path) -> None:
                     )
                 elif build_frontend.name == "build":
                     if not 0 <= build_options.build_verbosity < 2:
-                        msg = f"build_verbosity {build_options.build_verbosity} is not supported for build frontend. Ignoring."
-                        log.warning(msg)
+                        log.warning(
+                            f"build_verbosity {build_options.build_verbosity} is "
+                            "not supported for build frontend. Ignoring."
+                        )
 
                     call(
                         "python",
@@ -360,7 +435,7 @@ def build(options: Options, tmp_path: Path) -> None:
                 else:
                     assert_never(build_frontend)
 
-                built_wheel = next(built_wheel_dir.glob("*.whl"))
+                test_wheel = built_wheel = next(built_wheel_dir.glob("*.whl"))
 
                 if built_wheel.name.endswith("none-any.whl"):
                     raise errors.NonPlatformWheelError()
@@ -368,73 +443,152 @@ def build(options: Options, tmp_path: Path) -> None:
                 log.step_end()
 
             if build_options.test_command and build_options.test_selector(config.identifier):
-                log.step("Testing wheel...")
+                if not config.is_simulator:
+                    log.step("Skipping tests on non-simulator SDK")
+                elif config.arch != os.uname().machine:
+                    log.step("Skipping tests on non-native simulator architecture")
+                else:
+                    if build_options.before_test:
+                        log.step("Running before_test...")
+                        before_test_prepared = prepare_command(
+                            build_options.before_test,
+                            project=".",
+                            package=build_options.package_dir,
+                        )
+                        shell(before_test_prepared, env=env)
 
-                if build_options.before_test:
-                    before_test_prepared = prepare_command(
-                        build_options.before_test,
-                        project=".",
-                        package=build_options.package_dir,
+                    log.step("Setting up test harness...")
+                    # Copy the stub testbed project into the build directory
+                    testbed_path = identifier_tmp_dir / "testbed"
+                    shutil.copytree(
+                        # FIXME: bundle the testbed with the host python
+                        # host_install_path / testbed,
+                        Path(__file__).parent / "resources/ios-testbed",
+                        testbed_path,
                     )
-                    shell_with_arch(before_test_prepared, env=virtualenv_env)
 
-            #         # install the wheel
-            #         if is_cp38 and python_arch == "x86_64":
-            #             virtualenv_env_install_wheel = virtualenv_env.copy()
-            #             virtualenv_env_install_wheel["SYSTEM_VERSION_COMPAT"] = "0"
-            #             log.notice(
-            #                 unwrap(
-            #                     """
-            #                     Setting SYSTEM_VERSION_COMPAT=0 to ensure CPython 3.8 can get
-            #                     correct macOS version and allow installation of wheels with
-            #                     MACOSX_DEPLOYMENT_TARGET >= 11.0.
-            #                     See https://github.com/pypa/cibuildwheel/issues/1767 for the
-            #                     details.
-            #                     """
-            #                 )
-            #             )
-            #         else:
-            #             virtualenv_env_install_wheel = virtualenv_env
+                    # Install the Python XCframework into the stub testbed
+                    (testbed_path / "Python.xcframework").symlink_to(
+                        host_install_path / "Python.xcframework"
+                    )
 
-            #         pip_install(
-            #             f"{repaired_wheel}{build_options.test_extras}",
-            #             env=virtualenv_env_install_wheel,
-            #         )
+                    # Build a source tarball of the project
+                    call(
+                        "python",
+                        "-m",
+                        "build",
+                        build_options.package_dir,
+                        "--sdist",
+                        f"--outdir={identifier_tmp_dir}",
+                        capture_stdout=True,
+                    )
+                    src_tarball = next(identifier_tmp_dir.glob("*.tar.gz"))
 
-            #         # test the wheel
-            #         if build_options.test_requires:
-            #             pip_install(
-            #                 *build_options.test_requires,
-            #                 env=virtualenv_env_install_wheel,
-            #             )
+                    # Unpack the source tarball into the stub testbed
+                    extract_tar(
+                        src_tarball,
+                        testbed_path / "iOSTestbed" / "app",
+                        strip=1,
+                    )
 
-            #         # run the tests from a temp dir, with an absolute path in the command
-            #         # (this ensures that Python runs the tests against the installed wheel
-            #         # and not the repo code)
-            #         test_command_prepared = prepare_command(
-            #             build_options.test_command,
-            #             project=Path(".").resolve(),
-            #             package=build_options.package_dir.resolve(),
-            #             wheel=repaired_wheel,
-            #         )
+                    # Add the test runner arguments to the testbed's Info.plist file.
+                    info_plist = testbed_path / "iOSTestbed" / "iOSTestbed-Info.plist"
+                    with info_plist.open("rb") as f:
+                        info = plistlib.load(f)
 
-            #         test_cwd = identifier_tmp_dir / "test_cwd"
-            #         test_cwd.mkdir(exist_ok=True)
-            #         (test_cwd / "test_fail.py").write_text(test_fail_cwd_file.read_text())
+                    info["TestArgs"] = shlex.split(build_options.test_command)
 
-            #         shell_with_arch(test_command_prepared, cwd=test_cwd, env=virtualenv_env)
+                    with info_plist.open("wb") as f:
+                        plistlib.dump(info, f)
 
-            # we're all done here; move it to output (overwrite existing)
+                    log.step("Installing test requirements...")
+                    # Install the compiled wheel (with any test extras), plus
+                    # the test requirements. Use the --platform tag to force
+                    # the installtion of iOS wheels; this requires the use of
+                    # --only-binary=:all:.
+                    ios_version = build_env["IPHONEOS_DEPLOYMENT_TARGET"]
+                    platform_tag = f"ios_{ios_version.replace(".", "_")}_{config.arch}_{config.sdk}"
+
+                    call(
+                        "python",
+                        "-m",
+                        "pip",
+                        "install",
+                        "--only-binary=:all:",
+                        "--platform",
+                        platform_tag,
+                        "--target",
+                        testbed_path / "iOSTestbed" / "app_packages",
+                        f"{test_wheel}{build_options.test_extras}",
+                        *build_options.test_requires,
+                        env=build_env,
+                    )
+
+                    log.step("Running test suite...")
+                    xcresult = identifier_tmp_dir / "tests.xcresult"
+                    try:
+                        # Run the test suite. This will compile the testbed app,
+                        # start a simulator, and run testbed in the simulator;
+                        # but it won't display stdout of the test app as it runs.
+                        # Xcode is really noisy; run in quiet mode unless verbosity
+                        # has been requested.
+                        if build_options.build_verbosity:
+                            test_cmd = ["xcodebuild", "test"]
+                        else:
+                            test_cmd = ["xcodebuild", "test", "-quiet"]
+
+                        # The runtime behavior of the simulator doesn't change
+                        # with the model - it only affects the screen size
+                        # (which we don't care about). The iPhone SE 3rd gen is
+                        # an "LTS" iPhone model, so we can rely on it existing.
+                        simulator = "iPhone SE (3rd Generation)"
+
+                        # Invoke xcodebuild. Provide a known location for the results
+                        # (so we can process them later); also provide a derivedDataPath
+                        # in the tmp folder so that it will be cleaned up on exit.
+                        call(
+                            *test_cmd,
+                            "-project",
+                            testbed_path / "iOSTestbed.xcodeproj",
+                            "-scheme",
+                            "iOSTestbed",
+                            "-destination",
+                            f"platform=iOS Simulator,name={simulator}",
+                            "-resultBundlePath",
+                            xcresult,
+                            "-derivedDataPath",
+                            identifier_tmp_dir / "DerivedData",
+                        )
+                        failed = False
+                    except subprocess.CalledProcessError:
+                        failed = True
+                    finally:
+                        # No matter whether the test passed or failed, extract
+                        # stdout from the tests results, and display to the
+                        # user.
+                        print("\nExtracting test output...")
+                        test_output = extract_test_output(xcresult)
+
+                        # Write the test output to the screen
+                        print("-" * 79)
+                        print(test_output)
+
+                    log.step_end(success=not failed)
+
+                    if failed:
+                        log.error(f"Test suite failed on {config.identifier}")
+                        sys.exit(1)
+
             if compatible_wheel is None:
                 output_wheel = build_options.output_dir.joinpath(built_wheel.name)
                 moved_wheel = move_file(built_wheel, output_wheel)
                 if moved_wheel != output_wheel.resolve():
                     log.warning(
-                        "{built_wheel} was moved to {moved_wheel} instead of {output_wheel}"
+                        f"{built_wheel} was moved to {moved_wheel} " f"instead of {output_wheel}"
                     )
                 built_wheels.append(output_wheel)
 
-            # clean up
+            # Clean up
             shutil.rmtree(identifier_tmp_dir)
 
             log.build_end()
