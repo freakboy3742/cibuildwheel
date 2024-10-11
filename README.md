@@ -24,18 +24,16 @@ What does it do?
 
 While cibuildwheel itself requires a recent Python version to run (we support the last three releases), it can target the following versions to build wheels:
 
-While cibuildwheel itself requires a recent Python version to run (we support the last three releases), it can target the following versions to build wheels:
-
-|                | macOS Intel | macOS Apple Silicon | Windows 64bit | Windows 32bit | Windows Arm64 | manylinux<br/>musllinux x86_64 | manylinux<br/>musllinux i686 | manylinux<br/>musllinux aarch64 | manylinux<br/>musllinux ppc64le | manylinux<br/>musllinux s390x | musllinux armv7l | Pyodide | iOS |
+|                | macOS Intel | macOS Apple Silicon | Windows 64bit | Windows 32bit | Windows Arm64 | manylinux<br/>musllinux x86_64 | manylinux<br/>musllinux i686 | manylinux<br/>musllinux aarch64 | manylinux<br/>musllinux ppc64le | manylinux<br/>musllinux s390x | musllinux armv7l | iOS | Pyodide |
 |----------------|----|-----|-----|-----|-----|----|-----|----|-----|-----|---|-----|-----|
 | CPython 3.6    | ✅ | N/A | ✅  | ✅  | N/A | ✅  | ✅  | ✅ | ✅  | ✅  | ✅ | N/A | N/A |
 | CPython 3.7    | ✅ | N/A | ✅  | ✅  | N/A | ✅ | ✅  | ✅ | ✅  | ✅  | ✅ | N/A | N/A |
 | CPython 3.8    | ✅ | ✅  | ✅  | ✅  | N/A | ✅ | ✅  | ✅ | ✅  | ✅  | ✅ | N/A | N/A |
-| CPython 3.9    | ✅ | ✅  | ✅  | ✅  | ✅² | ✅ | ✅ | ✅ | ✅  | ✅  | ✅ | N/A | ✅ |
-| CPython 3.10   | ✅ | ✅  | ✅  | ✅  | ✅² | ✅ | ✅  | ✅ | ✅  | ✅  | ✅ | N/A | ✅ |
-| CPython 3.11   | ✅ | ✅  | ✅  | ✅  | ✅² | ✅ | ✅  | ✅ | ✅  | ✅  | ✅ | N/A | ✅ |
-| CPython 3.12   | ✅ | ✅  | ✅  | ✅  | ✅² | ✅ | ✅  | ✅ | ✅  | ✅  | ✅  | ✅⁴ | ✅ |
-| CPython 3.13³  | ✅ | ✅  | ✅  | ✅  | ✅² | ✅ | ✅  | ✅ | ✅  | ✅  | ✅  | N/A | ✅ |
+| CPython 3.9    | ✅ | ✅  | ✅  | ✅  | ✅² | ✅ | ✅ | ✅ | ✅  | ✅  | ✅ | N/A | N/A |
+| CPython 3.10   | ✅ | ✅  | ✅  | ✅  | ✅² | ✅ | ✅  | ✅ | ✅  | ✅  | ✅ | N/A | N/A |
+| CPython 3.11   | ✅ | ✅  | ✅  | ✅  | ✅² | ✅ | ✅  | ✅ | ✅  | ✅  | ✅ | N/A | N/A |
+| CPython 3.12   | ✅ | ✅  | ✅  | ✅  | ✅² | ✅ | ✅  | ✅ | ✅  | ✅  | ✅  | N/A | ✅⁴ |
+| CPython 3.13³  | ✅ | ✅  | ✅  | ✅  | ✅² | ✅ | ✅  | ✅ | ✅  | ✅  | ✅  | ✅ | N/A |
 | PyPy 3.7 v7.3  | ✅ | N/A | ✅  | N/A | N/A | ✅¹ | ✅¹  | ✅¹ | N/A | N/A | N/A | N/A | N/A |
 | PyPy 3.8 v7.3  | ✅ | ✅  | ✅  | N/A | N/A | ✅¹ | ✅¹  | ✅¹ | N/A | N/A | N/A | N/A | N/A |
 | PyPy 3.9 v7.3  | ✅ | ✅  | ✅  | N/A | N/A | ✅¹ | ✅¹  | ✅¹ | N/A | N/A | N/A | N/A | N/A |
@@ -77,8 +75,9 @@ Usage
 Example setup
 -------------
 
-To build manylinux, musllinux, macOS, and Windows wheels on GitHub Actions, you could use this `.github/workflows/wheels.yml`:
+To build manylinux, musllinux, macOS (producing x86_64, ARM64 and universal2 wheels), Windows, iOS and pyodide wheels on GitHub Actions, you could use this `.github/workflows/wheels.yml`:
 
+<!--generic-github-start-->
 ```yaml
 name: Build
 
@@ -86,11 +85,31 @@ on: [push, pull_request]
 
 jobs:
   build_wheels:
-    name: Build wheels on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Build wheels for ${{ matrix.os }}
+    runs-on: ${{ matrix.runs-on }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-13, macos-latest]
+        os: [ linux, windows, macOS-intel, macOS-arm, iOS, pyodide ]
+        include:
+          - archs: auto
+            platform: auto
+          - os: linux
+            runs-on: ubuntu-latest
+          - os: windows
+            runs-on: windows-latest
+          - os: macOS-intel
+            # macos-13 was the last x86_64 runner
+            runs-on: macos-13
+          - os: macOS-arm
+            # macos-14+ (including latest) are ARM64 runners
+            runs-on: macos-latest
+            archs: auto,universal2
+          - os: iOS
+            runs-on: macos-latest
+            platform: ios
+          - os: pyodide
+            runs-on: ubuntu-latest
+            platform: pyodide
 
     steps:
       - uses: actions/checkout@v4
@@ -103,15 +122,21 @@ jobs:
 
       - name: Build wheels
         run: python -m cibuildwheel --output-dir wheelhouse
-        # to supply options, put them in 'env', like:
-        # env:
-        #   CIBW_SOME_OPTION: value
+        env:
+          CIBW_PLATFORM: ${{ matrix.platform }}
+          CIBW_ARCHS: ${{ matrix.archs }}
+        # Can also be configured directly, using `with:`
+        # with:
+        #   package-dir: .
+        #   output-dir: wheelhouse
+        #   config-file: "{package}/pyproject.toml"
 
       - uses: actions/upload-artifact@v4
         with:
           name: cibw-wheels-${{ matrix.os }}-${{ strategy.job-index }}
           path: ./wheelhouse/*.whl
 ```
+<!--generic-github-end-->
 
 For more information, including PyPI deployment, and the use of other CI services or the dedicated GitHub Action, check out the [documentation](https://cibuildwheel.pypa.io) and the [examples](https://github.com/pypa/cibuildwheel/tree/main/examples).
 

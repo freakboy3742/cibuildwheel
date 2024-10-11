@@ -532,7 +532,7 @@ def build(options: Options, tmp_path: Path) -> None:
                         # but it won't display stdout of the test app as it runs.
                         # Xcode is really noisy; run in quiet mode unless verbosity
                         # has been requested.
-                        if build_options.build_verbosity:
+                        if build_options.build_verbosity > 0:
                             test_cmd = ["xcodebuild", "test"]
                         else:
                             test_cmd = ["xcodebuild", "test", "-quiet"]
