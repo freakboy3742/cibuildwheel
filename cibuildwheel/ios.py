@@ -29,6 +29,7 @@ from .util import (
     BuildSelector,
     call,
     combine_constraints,
+    copy_test_sources,
     download,
     extract_tar,
     find_compatible_wheel,
@@ -472,24 +473,34 @@ def build(options: Options, tmp_path: Path) -> None:
                         host_install_path / "Python.xcframework"
                     )
 
-                    # Build a source tarball of the project
-                    call(
-                        "python",
-                        "-m",
-                        "build",
-                        build_options.package_dir,
-                        "--sdist",
-                        f"--outdir={identifier_tmp_dir}",
-                        capture_stdout=True,
-                    )
-                    src_tarball = next(identifier_tmp_dir.glob("*.tar.gz"))
+                    if build_options.test_sources:
+                        copy_test_sources(
+                            build_options.test_sources,
+                            build_options.package_dir,
+                            testbed_path / "iOSTestbed" / "app"
+                        )
+                    else:
+                        # Copy *all* the test sources; however use the sdist
+                        # to do this so that we avoid copying any .git or venv folders.
 
-                    # Unpack the source tarball into the stub testbed
-                    extract_tar(
-                        src_tarball,
-                        testbed_path / "iOSTestbed" / "app",
-                        strip=1,
-                    )
+                        # Build a sdist of the project
+                        call(
+                            "python",
+                            "-m",
+                            "build",
+                            build_options.package_dir,
+                            "--sdist",
+                            f"--outdir={identifier_tmp_dir}",
+                            capture_stdout=True,
+                        )
+                        src_tarball = next(identifier_tmp_dir.glob("*.tar.gz"))
+
+                        # Unpack the source tarball into the stub testbed
+                        extract_tar(
+                            src_tarball,
+                            testbed_path / "iOSTestbed" / "app",
+                            strip=1,
+                        )
 
                     # Add the test runner arguments to the testbed's Info.plist file.
                     info_plist = testbed_path / "iOSTestbed" / "iOSTestbed-Info.plist"
